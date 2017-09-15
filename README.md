@@ -1,46 +1,78 @@
 # **Project 5 Submission in CarND-Term2**
 This repository contains project 5 submission in Self-Driving Car Nano-Degree, Term 2, Model Predictive Control. Modified source codes are all included in folder ./src. The following files are modified:
 
-##### 1. MPC.cpp
-##### 2. main.cpp
+1. MPC.cpp
+2. main.cpp
 
 ##### 1. MPC processing steps
-###### a)
-###### b)
-###### c)
+a) from simulator, capture way points:  `ptsx` and `ptsy`, and vehicle state: `px`, `py`, `psi`, `v`, `delta`, and `a`.
 
-##### 1. The model
-a) P component is proportional to the instantaneous cross track error (CTE), and it tries to steer the wheels to the opposite direction of CTE and drive the car back to track. However, P component will lead the car to keep crossing the center track and cause overshoot. P parameter can be turned by watching overshoot and settling time.
+b) convert way points coordinate from map perspective to vehicle perspective, and fit way points into a third order polynomial.
 
-b) I component is proportional to the integration of CTE, and it is used to correct any bias at the steering function. Think about in a steady state, steering system bias will cause certain offset without proper I component. I parameter can be tuned by watching the steady state error.
+c) based on current vehicle state and fitted polynomial coefficients, and predefined cost function and model constraints, find an optimal trajectory and associated actuations, by utilizing the IPOPT and CPPAD libraries.
 
-c) D component is proportional to the derivative of CTE, and it is used to introduce damping function to reduce overshoot. D parameter can be tune by watching the overshoot.
+d) send the actuation commands, `steer_value` and `throttle_value` to simulator. Also send fitted polynomial and calculated optimal trajectory to simulator for illustration purpose.
 
+e) go back  to step a) for the next step.
 
+##### 2. Vehicle motion model and cost function
 
+The vehicle motion model is adopted from the class notes and each state has 6 variables: `{x, y, psi, v, cte, epsi}`, as below:
+
+![motion model](./model_equations.png)
+
+The model constrains are developed based on the motion model. The cost function used is as follow:
+
+`cost = a * cte^2 + b * epsi^2 + c * (v-ref_v)^2 + d * delta^2 + e * a^2 + f * (delta*v)^2 + g * delta_delta^2 + h * a_delta^2`
+
+`a, b, c, d, e, f, g, h` are weighting factors. And `delta_delta` is the change rate of steering angle, and `a_delta` is the change rate of acceleration. These two are used to punish sudden change on steering angle and acceleration. The term `(v-ref_v)^2` is used to for the speed to close to reference speed (ref_v = 70) as much as possible, and prevent the vehicle stuck. The term `(delta*v)^2` is adopted from [this post](https://github.com/jeremy-shannon/CarND-MPC-Project/blob/master/README.md) to prevent large steering angle at high speed. I found that this term acted quite effectively and slowed down the vehicle whenever sharp turning is present and keep the vehicle staying on track. After quite a lot tunning, the weighting factors for various terms are as below:
+
+```cpp
+cte_cost_weight = 3000;
+epsi_cost_weight = 3000;
+v_cost_weight = 2;
+delta_cost_weight = 5;
+a_cost_weight = 5;
+delta_v_cost_weight = 500;
+delta_change_cost_weight = 200;
+a_change_cost_weight = 10;
+```
 ##### 3. Time steps and elapsed duration selection
+
+The final time steps is set to `N = 10`, and elapsed duration per steps is set to `dt = 0.1`. The total duration for model prediction is `1 second`. I tried to set `N = 20` and `dt = 0.05`, but the vehicle suffers from more wiggling on the track.
 
 ##### 4. Latency treatment
 
-PID hyper-parameters are first tuned manually to make sure the car can roughly follow the track. Then a twiddle algorithm is implemented to fine tune the parameters by comparing the total CTE error. I borrowed a few techniques from the [the post](https://github.com/jeremy-shannon/CarND-PID-Control-Project/blob/master/README.md) to make the twiddle working, such as using settle_steps and eval_steps.
+When considering `100ms` auction latency, I set the initial state (model constraints) for IPOPT with the predicted state after 100ms instead of current state obtained from simulation. The prediction is statement is as below:
 
-I implemented one PID controller for steering, and one PD controller for throttle. Either controller can enable twiddle feature independently. In really, I ran twiddle for steering controller first while keeping throttle controller with fixed parameters, and then ran twiddle for throttle controller while keeping steering controller with parameters found previously. The following parameters were found out after these two trial:
+```cpp
+// predict state after latency
+double dt_latency = 0.1;
+double pred_x = x + v * cos(psi) * dt_latency;
+double pred_y = y + v * sin(psi) * dt_latency;
+double pred_psi = psi + v * delta / Lf * dt_latency;
+double pred_v = v + a * dt_latency;
+double pred_cte = cte + v * sin(epsi) * dt_latency;
+double pred_epsi = epsi + v * delta / Lf * dt_latency;
+```
+The initial state constraints are set below:
 
-Steering PID controller: `P = 0.140937; I = 0.000302802; D = 3.05879`
-
-Throttle PID controller: `P = 0.33344; I = 0.0; D = 0.02004`;
-
-In order to prevent the speed dropping to zero at some condition, a `low_speed_limit` was set, whenever the speed is lower then this limit, the throttle will be set the a default value and the car is pushed forward. In order to smooth the throttle value when the speed is crossing `low_speed_limit`, a weighting method is introduced to the throttle controller, as below:
-
- `throttle_value = low_speed_limit/speed * default_throttle_value + (1.0 - low_speed_limit/speed) * PID_value`
-
-When speed is close to `low_speed_limit`, the default throttle value will have more weight, when the speed is high enough, the value from PID control is dominant.
-
-
-
-
-# CarND-Controls-MPC
-Self-Driving Car Engineer Nanodegree Program
+```cpp
+// used the predicted state after latency as initial state
+constraints_lowerbound[x_start] = pred_x;
+constraints_lowerbound[y_start] = pred_y;
+constraints_lowerbound[psi_start] = pred_psi;
+constraints_lowerbound[v_start] = pred_v;
+constraints_lowerbound[cte_start] = pred_cte;
+constraints_lowerbound[epsi_start] = pred_epsi;
+constraints_upperbound[x_start] = pred_x;
+constraints_upperbound[y_start] = pred_y;
+constraints_upperbound[psi_start] = pred_psi;
+constraints_upperbound[v_start] = pred_v;
+constraints_upperbound[cte_start] = pred_cte;
+constraints_upperbound[epsi_start] = pred_epsi;
+```
+The beauty of this approach is that we can handle arbitrary number of latency, such as 70ms or 90ms. The latency is not necessary to be an integer multiple of one step duration.
 
 ---
 

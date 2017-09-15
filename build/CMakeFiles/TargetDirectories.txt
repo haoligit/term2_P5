@@ -1,0 +1,3 @@
+/home/haoli/udacity/sdc_nano/term2/P5_submission/build/CMakeFiles/edit_cache.dir
+/home/haoli/udacity/sdc_nano/term2/P5_submission/build/CMakeFiles/rebuild_cache.dir
+/home/haoli/udacity/sdc_nano/term2/P5_submission/build/CMakeFiles/mpc.dir
